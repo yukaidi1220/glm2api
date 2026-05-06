@@ -22,7 +22,7 @@ from typing import Callable
 from ..config import AppConfig
 from ..logging_utils import debug_dump
 from .glm_auth import GLMAccessTokenManager, build_sign
-from .translator import GLMEventAccumulator, convert_messages, extract_recent_user_url, filter_tools, resolve_chat_mode, resolve_upstream_model
+from .translator import GLMEventAccumulator, SERVER_SIDE_TOOL_NAMES, convert_messages, extract_recent_user_url, filter_tools, resolve_chat_mode, resolve_upstream_model
 
 
 FILE_UPLOAD_URL_SUFFIX = "/backend-api/assistant/file_upload"
@@ -346,6 +346,7 @@ class GLMWebClient:
             tools=filtered_tools,
             blocked_tool_names={name.strip() for name in self.config.blocked_tool_names if name.strip()},
             tool_choice=openai_payload.get("tool_choice"),
+            server_side_tool_names=SERVER_SIDE_TOOL_NAMES,
         )
         debug_dump(self.logger, self.config.debug_dump_all, "OpenAI 原始 chat 请求 payload", openai_payload)
         debug_dump(self.logger, self.config.debug_dump_all, "转换后的 GLM messages", converted_messages)

@@ -11,17 +11,7 @@ DEFAULT_IMAGE_ASSISTANT_ID = "65a232c082ff90a2ad2f15e2"
 DEFAULT_IMAGE_MODEL_NAME = "glm-image-1"
 DEFAULT_GLM_BASE_URL = "https://chatglm.cn/chatglm"
 GUEST_REFRESH_TOKEN_MARKER = "__glm_guest__"
-DEFAULT_BLOCKED_TOOL_NAMES = (
-    "open_url",
-    "open_ul",
-    "browser.open",
-    "web.run",
-    "web.open",
-    "web.search",
-    "web_search",
-    "browse",
-    "open_link",
-)
+DEFAULT_BLOCKED_TOOL_NAMES = ()
 BUILTIN_EXPOSED_MODELS = (
     "cogView-4-250304",
     "glm-5.1",

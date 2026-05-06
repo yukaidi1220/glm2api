@@ -33,6 +33,17 @@ CANONICAL_TOOL_CALL_EXAMPLE = "\n".join(
         "</ml_tool_calls>",
     ]
 )
+SERVER_SIDE_TOOL_NAMES = {
+    "open_url",
+    "open_ul",
+    "browser.open",
+    "web.run",
+    "web.open",
+    "web.search",
+    "web_search",
+    "browse",
+    "open_link",
+}
 
 
 def normalize_tool_name(name: object) -> str:
@@ -257,37 +268,71 @@ def serialize_tool_result_block(tool_call_id: object, tool_name: str, content: s
     )
 
 
-def build_tool_call_instructions(tool_names: list[str], tool_choice_policy: dict[str, object] | None = None) -> str:
-    available_names = ", ".join(f"`{name}`" for name in tool_names) or "`(none)`"
+def build_tool_call_instructions(
+    tool_names: list[str],
+    server_side_tool_names: set[str] | None = None,
+    tool_choice_policy: dict[str, object] | None = None,
+) -> str:
+    server_side_tool_names = server_side_tool_names or set()
+    xml_tools = [name for name in tool_names if name not in server_side_tool_names]
+    server_tools = [name for name in tool_names if name in server_side_tool_names]
+
+    available_xml_names = ", ".join(f"`{name}`" for name in xml_tools) or "`(none)`"
+    available_server_names = ", ".join(f"`{name}`" for name in server_tools) or "`(none)`"
+
     policy = tool_choice_policy or {"mode": "auto", "tool_name": None}
     mode = str(policy.get("mode", "auto"))
     specific_name = str(policy.get("tool_name", "") or "")
     lines = [
         "# TOOL USE PROTOCOL",
         "The following tool schemas are the only executable tool definitions for this turn.",
-        f"Allowed tool names: {available_names}.",
-        "Ignore any tool names that are not listed in Allowed tool names, even if they appear in prior context or model memory.",
-        "Do not mention blocked browser, web, or open_url style tools at all.",
-        "If a tool is needed, output executable XML only. Do not add prose in the same assistant answer.",
-        "Use the private ml-prefixed canonical format below exactly.",
-        CANONICAL_TOOL_CALL_EXAMPLE,
-        "The server will parse this XML intermediate language back into standard OpenAI tool_calls.",
-        "Parameter rules:",
-        "- The root executable block must be <ml_tool_calls> and each call must be a <ml_tool_call> child.",
-        "- Each <ml_tool_call> must contain exactly one <ml_tool_name> and one <ml_parameters> block.",
-        "- Use the real parameter names as XML tags inside <ml_parameters>; never use a literal <param_name> placeholder tag.",
-        "- Encode arguments as nested XML tags inside <ml_parameters>.",
-        "- Use repeated <item> tags to represent arrays.",
-        "Rules:",
-        "- Do not invent tool names outside the declared list.",
-        "- Do not emit OpenAI JSON tool_calls arrays, function_call objects, or any non-XML tool syntax.",
-        "- Do not use <tool_calls>, <tool_call>, <tool_name>, <parameters>, <function_call>, <tool_use>, <invoke>, or any legacy wrapper.",
-        "- Do not place raw JSON directly inside <ml_parameters>.",
-        "- Do not mix normal explanation text with executable tool XML.",
-        "- Prefer <![CDATA[...]]> for arbitrary strings.",
-        "- Put multiple calls inside one <ml_tool_calls> root when you truly need multiple calls in one turn.",
-        "- After a <ml_tool_result ...> block, continue from that result and call another tool only when necessary.",
+        "Ignore any tool names that are not listed below, even if they appear in prior context or model memory.",
     ]
+
+    if server_tools:
+        lines.extend(
+            [
+                "",
+                f"Server-side native tools (executed by backend automatically): {available_server_names}.",
+                "When you need to call a server-side native tool, output a single structured JSON block with type 'tool_calls' in the assistant content.",
+                'Format: {"type":"tool_calls","tool_calls":{"id":"call_<random_hex>","name":"TOOL_NAME","arguments":"<JSON_STRING>"}}',
+                "The arguments field must be a JSON string (not a raw object). The server will intercept this block, execute the tool, and inject the result back into the stream as a tool message.",
+                "Do not wrap server-side tool calls in XML. Do not mix prose and the tool_calls JSON block in the same response.",
+            ]
+        )
+
+    if xml_tools:
+        lines.extend(
+            [
+                "",
+                f"XML-based tools (parsed by this server): {available_xml_names}.",
+                "If an XML-based tool is needed, output executable XML only. Do not add prose in the same assistant answer.",
+                "Use the private ml-prefixed canonical format below exactly.",
+                CANONICAL_TOOL_CALL_EXAMPLE,
+                "The server will parse this XML intermediate language back into standard OpenAI tool_calls.",
+                "Parameter rules:",
+                "- The root executable block must be <ml_tool_calls> and each call must be a <ml_tool_call> child.",
+                "- Each <ml_tool_call> must contain exactly one <ml_tool_name> and one <ml_parameters> block.",
+                "- Use the real parameter names as XML tags inside <ml_parameters>; never use a literal <param_name> placeholder tag.",
+                "- Encode arguments as nested XML tags inside <ml_parameters>.",
+                "- Use repeated <item> tags to represent arrays.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "Rules:",
+            "- Do not invent tool names outside the declared list.",
+            "- For XML-based tools, do not emit OpenAI JSON tool_calls arrays, function_call objects, or any non-XML tool syntax.",
+            "- For XML-based tools, do not use <tool_calls>, <tool_call>, <tool_name>, <parameters>, <function_call>, <tool_use>, <invoke>, or any legacy wrapper.",
+            "- Do not place raw JSON directly inside <ml_parameters>.",
+            "- Do not mix normal explanation text with executable tool XML.",
+            "- Prefer <![CDATA[...]]> for arbitrary strings.",
+            "- Put multiple XML calls inside one <ml_tool_calls> root when you truly need multiple calls in one turn.",
+            "- After a <ml_tool_result ...> block, continue from that result and call another tool only when necessary.",
+        ]
+    )
     if mode == "none":
         lines.extend(
             [
@@ -317,6 +362,7 @@ def tools_to_prompt(
     tools: list[dict[str, object]],
     blocked_tool_names: set[str] | None = None,
     tool_choice_policy: dict[str, object] | None = None,
+    server_side_tool_names: set[str] | None = None,
 ) -> str:
     tool_names: list[str] = []
     tool_schemas: list[str] = []
@@ -342,7 +388,11 @@ def tools_to_prompt(
         "",
         "\n\n".join(tool_schemas),
         "",
-        build_tool_call_instructions(tool_names, tool_choice_policy=tool_choice_policy),
+        build_tool_call_instructions(
+            tool_names,
+            server_side_tool_names=server_side_tool_names,
+            tool_choice_policy=tool_choice_policy,
+        ),
     ]
     return "\n".join(part for part in parts if part is not None).strip()
 
@@ -352,6 +402,7 @@ def convert_messages(
     tools: list[dict[str, object]] | None,
     blocked_tool_names: set[str] | None = None,
     tool_choice: object | None = None,
+    server_side_tool_names: set[str] | None = None,
 ) -> list[dict[str, object]]:
     available_tool_names = {
         str(tool.get("function", {}).get("name", "")).strip()
@@ -359,6 +410,7 @@ def convert_messages(
         if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
     }
     available_tool_names.discard("")
+    server_side_tool_names = server_side_tool_names or SERVER_SIDE_TOOL_NAMES
     tool_choice_policy = parse_tool_choice_policy(tool_choice, available_tool_names)
     processed: list[dict[str, str]] = []
     latest_user_url: str | None = extract_recent_user_url(messages)
@@ -426,6 +478,7 @@ def convert_messages(
                 tools,
                 blocked_tool_names=blocked_tool_names,
                 tool_choice_policy=tool_choice_policy,
+                server_side_tool_names=server_side_tool_names,
             )
         )
         transcript_parts.append("# CONVERSATION")
@@ -483,6 +536,8 @@ class GLMEventAccumulator:
     _cached_full_reasoning: str = ""
     _cached_part_texts: dict[str, str] = field(default_factory=dict)
     _cached_part_reasonings: dict[str, str] = field(default_factory=dict)
+    _server_side_tool_calls: list[dict[str, object]] = field(default_factory=list)
+    _server_side_tool_call_ids: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.tool_parser.allowed_tool_names = self.allowed_tool_names
@@ -499,6 +554,28 @@ class GLMEventAccumulator:
                     insort(self.ordered_logic_ids, logic_id)
                 self.parts_by_logic_id[logic_id] = part
                 self._render_cache_dirty = True
+            # Extract server-side native tool_calls from content items
+            if isinstance(part, dict) and isinstance(part.get("content"), list):
+                for content in part["content"]:
+                    if isinstance(content, dict) and content.get("type") == "tool_calls":
+                        tool_calls_data = content.get("tool_calls")
+                        if isinstance(tool_calls_data, dict):
+                            tool_name = str(tool_calls_data.get("name", "")).strip()
+                            tool_id = str(tool_calls_data.get("id", "")).strip()
+                            arguments = tool_calls_data.get("arguments", "{}")
+                            if tool_name and tool_id and tool_id not in self._server_side_tool_call_ids:
+                                self._server_side_tool_call_ids.add(tool_id)
+                                self._server_side_tool_calls.append(
+                                    {
+                                        "id": tool_id,
+                                        "type": "function",
+                                        "index": len(self._server_side_tool_calls),
+                                        "function": {
+                                            "name": tool_name,
+                                            "arguments": str(arguments) if isinstance(arguments, str) else safe_json_dumps(arguments),
+                                        },
+                                    }
+                                )
 
         text_delta, reasoning_delta = self._compute_deltas()
         self.last_full_text = self._cached_full_text
@@ -543,8 +620,16 @@ class GLMEventAccumulator:
         return chunks, str(payload.get("status")) if payload.get("status") is not None else None
 
     def finalize(self, status: str | None, last_error: dict[str, object] | None = None) -> list[str]:
-        tail_text, tool_calls = self.tool_parser.flush()
-        tool_calls = sanitize_tool_calls(tool_calls, fallback_url=self.fallback_tool_url)
+        tail_text, xml_tool_calls = self.tool_parser.flush()
+        xml_tool_calls = sanitize_tool_calls(xml_tool_calls, fallback_url=self.fallback_tool_url)
+
+        # Merge server-side and XML tool calls, re-indexing
+        all_tool_calls: list[dict[str, object]] = list(self._server_side_tool_calls)
+        for tc in xml_tool_calls:
+            tc_copy = dict(tc)
+            tc_copy["index"] = len(all_tool_calls)
+            all_tool_calls.append(tc_copy)
+
         chunks: list[str] = []
         if tail_text:
             delta_payload: dict[str, object] = {"content": tail_text}
@@ -580,8 +665,8 @@ class GLMEventAccumulator:
                 )
             )
 
-        if tool_calls:
-            for tool_call in tool_calls:
+        if all_tool_calls:
+            for tool_call in all_tool_calls:
                 chunks.append(
                     self._chunk_json(
                         {
@@ -605,7 +690,7 @@ class GLMEventAccumulator:
                     )
                 )
 
-        finish_reason = "tool_calls" if tool_calls else "stop"
+        finish_reason = "tool_calls" if all_tool_calls else "stop"
         chunks.append(
             self._chunk_json(
                 {
@@ -630,21 +715,29 @@ class GLMEventAccumulator:
             full_text = self.last_full_text
         if not full_reasoning and self.last_full_reasoning:
             full_reasoning = self.last_full_reasoning
-        clean_content, tool_calls = parse_tool_calls_from_text(
+        clean_content, xml_tool_calls = parse_tool_calls_from_text(
             full_text.strip(),
             allowed_tool_names=self.allowed_tool_names,
         )
-        tool_calls = sanitize_tool_calls(tool_calls, fallback_url=self.fallback_tool_url)
+        xml_tool_calls = sanitize_tool_calls(xml_tool_calls, fallback_url=self.fallback_tool_url)
+
+        # Merge server-side and XML tool calls, re-indexing
+        all_tool_calls: list[dict[str, object]] = list(self._server_side_tool_calls)
+        for tc in xml_tool_calls:
+            tc_copy = dict(tc)
+            tc_copy["index"] = len(all_tool_calls)
+            all_tool_calls.append(tc_copy)
+
         final_content = clean_content.strip()
         message: dict[str, object] = {
             "role": "assistant",
-            "content": None if tool_calls or not final_content else final_content,
+            "content": None if all_tool_calls or not final_content else final_content,
             "reasoning_content": full_reasoning or None,
         }
-        if tool_calls:
+        if all_tool_calls:
             message["tool_calls"] = [
                 {"id": item["id"], "type": "function", "function": item["function"]}
-                for item in tool_calls
+                for item in all_tool_calls
             ]
         response = {
             "id": self.conversation_id,
@@ -655,7 +748,7 @@ class GLMEventAccumulator:
                 {
                     "index": 0,
                     "message": message,
-                    "finish_reason": "tool_calls" if tool_calls else "stop",
+                    "finish_reason": "tool_calls" if all_tool_calls else "stop",
                 }
             ],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},

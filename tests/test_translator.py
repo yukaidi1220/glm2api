@@ -48,10 +48,9 @@ def test_convert_messages_injects_xml_tool_prompt_and_history():
     assert "The server will parse this XML intermediate language back into standard OpenAI tool_calls." in prompt
     assert "<actual_parameter_name><![CDATA[value]]></actual_parameter_name>" in prompt
     assert "never use a literal <param_name> placeholder tag" in prompt
-    assert "Do not use <tool_calls>, <tool_call>, <tool_name>, <parameters>, <function_call>, <tool_use>, <invoke>, or any legacy wrapper." in prompt
+    assert "For XML-based tools, do not use <tool_calls>, <tool_call>, <tool_name>, <parameters>, <function_call>, <tool_use>, <invoke>, or any legacy wrapper." in prompt
     assert "# BLOCKED TOOLS" not in prompt
-    assert "Ignore any tool names that are not listed in Allowed tool names" in prompt
-    assert "Do not mention blocked browser, web, or open_url style tools at all." in prompt
+    assert "Ignore any tool names that are not listed below" in prompt
 
 
 def test_accumulator_build_response_maps_xml_to_openai_tool_calls():
